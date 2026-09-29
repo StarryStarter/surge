@@ -2,6 +2,9 @@
 whether the system oversold it. This is the core proof-of-correctness
 test for the whole project — everything else exists to make this pass
 for real, not by accident."""
+import pytest
+
+pytestmark = pytest.mark.slow
 
 from concurrent.futures import ThreadPoolExecutor
 
