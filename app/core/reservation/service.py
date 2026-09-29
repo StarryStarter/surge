@@ -1,43 +1,25 @@
-# app/core/reservation/service.py
 from uuid import UUID
 
-import asyncpg
-
-from app.core.errors import (
-    InvalidTransition,
-    PoolNotFound,
-    PoolSoldOut,
-    ReservationNotFound,
-)
-from app.core.pool.repository import PoolRepository
+from app.core.admission.service import AdmissionService
+from app.core.errors import InvalidTransition, ReservationNotFound
 from app.core.reservation.models import Reservation, ReservationStatus, can_transition
 from app.core.reservation.repository import ReservationRepository
 
 
 class ReservationService:
     def __init__(
-        self,
-        db: asyncpg.Pool,
-        pools: PoolRepository,
-        reservations: ReservationRepository,
+        self, reservations: ReservationRepository, admission: AdmissionService
     ) -> None:
-        self._db = db
-        self._pools = pools
         self._reservations = reservations
+        self._admission = admission
 
     async def reserve(self, pool_id: UUID, requester_id: str) -> Reservation:
-        # One connection, one transaction: the lock, the check, the decrement,
-        # and the reservation write all happen as a single uninterruptible unit.
-        async with self._db.acquire() as conn:
-            async with conn.transaction():
-                pool = await self._pools.get_for_update(conn, pool_id)
-                if pool is None:
-                    raise PoolNotFound(f"pool {pool_id} not found")
-                if pool.available <= 0:
-                    raise PoolSoldOut(f"pool {pool_id} is sold out")
-
-                await self._pools.decrement(conn, pool_id)
-                return await self._reservations.create_held(pool_id, requester_id, conn)
+        # 1) The fast, atomic yes/no decision: Redis only, no database, no lock.
+        await self._admission.admit(pool_id)
+        # 2) The permanent record. Known gap: if this insert fails, one unit stays
+        #    taken in Redis with no record in Postgres. That errs toward selling
+        #    too few, never too many. The outbox pattern (Phase 9) closes it.
+        return await self._reservations.create_held(pool_id, requester_id)
 
     async def confirm(self, reservation_id: UUID) -> Reservation:
         return await self._transition(
@@ -48,9 +30,7 @@ class ReservationService:
         released = await self._transition(
             reservation_id, ReservationStatus.HELD, ReservationStatus.RELEASED
         )
-        pool = await self._pools.get(released.pool_id)
-        if pool is not None:
-            await self._pools.set_available(pool.id, pool.available + 1)
+        await self._admission.release(released.pool_id)
         return released
 
     async def _transition(

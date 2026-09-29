@@ -20,8 +20,10 @@ class Settings(BaseSettings):
     app_env: Literal["development", "test", "production"] = "development"
 
     database_url: SecretStr
+    redis_url: SecretStr
     # Upper bound on concurrent DB queries per API process; tuned in Phase 4.
     db_pool_max_size: int = Field(default=10, ge=1)
+    redis_pool_max_size: int = Field(default=50, ge=1)
 
     # Only the test suite reads this — a separate database so tests never
     # touch dev data. Optional at the type level; tests fail clearly if unset.
