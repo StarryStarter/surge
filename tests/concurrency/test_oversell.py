@@ -5,6 +5,7 @@ for real, not by accident."""
 import pytest
 
 pytestmark = pytest.mark.slow
+import uuid
 
 from concurrent.futures import ThreadPoolExecutor
 
@@ -21,7 +22,9 @@ def test_naive_reserve_oversells_under_concurrency(client: TestClient) -> None:
 
     def attempt(i: int) -> int:
         resp = client.post(
-            f"/pools/{pool_id}/reserve", json={"requester_id": f"user-{i}"}
+            f"/pools/{pool_id}/reserve",
+            json={"requester_id": f"user-{i}"},
+            headers={"Idempotency-Key": str(uuid.uuid4())},
         )
         return resp.status_code
 

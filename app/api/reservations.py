@@ -1,11 +1,11 @@
-# app/api/reservations.py
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from app.api.dependencies import get_reservation_service
+from app.api.dependencies import get_idempotency_repo, get_reservation_service
+from app.core.idempotency.repository import IdempotencyRepository
 from app.core.reservation.models import Reservation
 from app.core.reservation.service import ReservationService
 
@@ -38,10 +38,23 @@ def _to_response(reservation: Reservation) -> ReservationResponse:
 async def reserve(
     pool_id: UUID,
     body: ReserveRequest,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
     service: Annotated[ReservationService, Depends(get_reservation_service)],
+    idempotency: Annotated[IdempotencyRepository, Depends(get_idempotency_repo)],
 ) -> ReservationResponse:
+    cached = await idempotency.get_response(idempotency_key)
+    if cached is not None:
+        return ReservationResponse(**cached)
+
+    if not await idempotency.try_claim(idempotency_key, body.requester_id):
+        # Known gap: a true simultaneous duplicate is told to retry shortly,
+        # rather than being made to wait for the first attempt's result.
+        raise HTTPException(409, "duplicate request already in progress, retry shortly")
+
     reservation = await service.reserve(pool_id, body.requester_id)
-    return _to_response(reservation)
+    response = _to_response(reservation)
+    await idempotency.save_response(idempotency_key, response.model_dump(mode="json"))
+    return response
 
 
 @router.post(
@@ -49,10 +62,21 @@ async def reserve(
 )
 async def confirm(
     reservation_id: UUID,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
     service: Annotated[ReservationService, Depends(get_reservation_service)],
+    idempotency: Annotated[IdempotencyRepository, Depends(get_idempotency_repo)],
 ) -> ReservationResponse:
+    cached = await idempotency.get_response(idempotency_key)
+    if cached is not None:
+        return ReservationResponse(**cached)
+
+    if not await idempotency.try_claim(idempotency_key, None):
+        raise HTTPException(409, "duplicate request already in progress, retry shortly")
+
     reservation = await service.confirm(reservation_id)
-    return _to_response(reservation)
+    response = _to_response(reservation)
+    await idempotency.save_response(idempotency_key, response.model_dump(mode="json"))
+    return response
 
 
 @router.post(

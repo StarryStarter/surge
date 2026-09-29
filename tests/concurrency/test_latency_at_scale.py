@@ -6,7 +6,7 @@ show it."""
 
 import time
 import pytest
-
+import uuid
 pytestmark = pytest.mark.slow
 from concurrent.futures import ThreadPoolExecutor
 
@@ -37,8 +37,12 @@ def test_latency_and_throughput_at_increasing_concurrency(client: TestClient) ->
 
         def attempt(i: int) -> None:
             start = time.perf_counter()
-            client.post(f"/pools/{pool_id}/reserve", json={"requester_id": f"user-{i}"})
-            latencies.append((time.perf_counter() - start) * 1000)  # milliseconds
+            client.post(
+                f"/pools/{pool_id}/reserve",
+                json={"requester_id": f"user-{i}"},
+                headers={"Idempotency-Key": str(uuid.uuid4())},
+            )
+            latencies.append((time.perf_counter() - start) * 1000)
 
         start_total = time.perf_counter()
         with ThreadPoolExecutor(max_workers=50) as pool:

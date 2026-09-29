@@ -5,6 +5,7 @@ from fastapi import Depends, Request
 from redis.asyncio import Redis
 
 from app.core.admission.service import AdmissionService
+from app.core.idempotency.repository import IdempotencyRepository
 from app.core.pool.repository import PoolRepository
 from app.core.pool.service import PoolService
 from app.core.reservation.repository import ReservationRepository
@@ -35,3 +36,9 @@ def get_reservation_service(
     admission: Annotated[AdmissionService, Depends(get_admission_service)],
 ) -> ReservationService:
     return ReservationService(ReservationRepository(db), admission)
+
+
+def get_idempotency_repo(
+    db: Annotated[asyncpg.Pool, Depends(get_db_pool)],
+) -> IdempotencyRepository:
+    return IdempotencyRepository(db)
