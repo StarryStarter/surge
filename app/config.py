@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     # Only the test suite reads this — a separate database so tests never
     # touch dev data. Optional at the type level; tests fail clearly if unset.
     test_database_url: SecretStr | None = None
+    test_redis_url: SecretStr | None = None
 
 
 @lru_cache
