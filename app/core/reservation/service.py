@@ -1,3 +1,4 @@
+import logging
 from uuid import UUID
 
 from app.core.admission.service import AdmissionService
@@ -5,6 +6,7 @@ from app.core.errors import InvalidTransition, ReservationNotFound
 from app.core.reservation.models import Reservation, ReservationStatus, can_transition
 from app.core.reservation.repository import ReservationRepository
 
+logger = logging.getLogger(__name__)
 
 class ReservationService:
     def __init__(
@@ -16,10 +18,24 @@ class ReservationService:
     async def reserve(self, pool_id: UUID, requester_id: str) -> Reservation:
         # 1) The fast, atomic yes/no decision: Redis only, no database, no lock.
         await self._admission.admit(pool_id)
-        # 2) The permanent record. Known gap: if this insert fails, one unit stays
-        #    taken in Redis with no record in Postgres. That errs toward selling
-        #    too few, never too many. The outbox pattern (Phase 9) closes it.
-        return await self._reservations.create_held(pool_id, requester_id)
+        # 2) The permanent record. If it fails, Redis has already given the unit
+        #    away, so hand it back before surfacing the error. BaseException (not
+        #    Exception) so a client disconnect that cancels the request between
+        #    the two steps doesn't leak the unit either.
+        try:
+            return await self._reservations.create_held(pool_id, requester_id)
+        except BaseException:
+            try:
+                await self._admission.release(pool_id)
+            except Exception:
+                # Both stores failed. The original error still reaches the caller;
+                # the drift is left for the reconciler (Phase 11) to repair.
+                logger.exception(
+                    "could not return unit for pool %s after failed reservation "
+                    "write; counter is now low until reconciled",
+                    pool_id,
+                )
+            raise
 
     async def confirm(self, reservation_id: UUID) -> Reservation:
         return await self._transition(
