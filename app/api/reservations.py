@@ -8,6 +8,13 @@ from app.api.dependencies import get_idempotency_service, get_reservation_servic
 from app.core.idempotency.service import IdempotencyService
 from app.core.reservation.models import Reservation
 from app.core.reservation.service import ReservationService
+from app.core.fairness.rate_limiter import RateLimiter
+from app.observability.metrics import RATE_LIMITED
+from app.api.dependencies import (
+    get_idempotency_service,
+    get_rate_limiter,
+    get_reservation_service,
+)
 
 router = APIRouter(tags=["reservations"])
 
@@ -41,10 +48,21 @@ async def reserve(
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
     service: Annotated[ReservationService, Depends(get_reservation_service)],
     idempotency: Annotated[IdempotencyService, Depends(get_idempotency_service)],
+    limiter: Annotated[RateLimiter, Depends(get_rate_limiter)],
 ) -> ReservationResponse:
+    # A replay of a finished request is free: it doesn't count against the limit.
     cached = await idempotency.get_cached_response(idempotency_key)
     if cached is not None:
         return ReservationResponse(**cached)
+
+    retry_after = await limiter.hit(f"reserve:{body.requester_id}")
+    if retry_after is not None:
+        RATE_LIMITED.inc()
+        raise HTTPException(
+            429,
+            "too many requests, slow down",
+            headers={"Retry-After": str(retry_after)},
+        )
 
     if not await idempotency.try_claim(idempotency_key):
         raise HTTPException(409, "duplicate request already in progress, retry shortly")
