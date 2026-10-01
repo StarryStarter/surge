@@ -118,16 +118,23 @@ The suite covers the full API, the outbox (including a repeated delivery adding 
 
 ## Benchmark
 
-> Fill in from a run on a quiet machine:
-> `python loadtest/oversell.py --requests 5000 --capacity 500 --concurrency 100`
+Run on a single laptop (the load generator, Docker, Nginx, and 3 API instances
+share it) against a remote Postgres on Neon, so the numbers below are a
+floor, not a ceiling. Each figure is the median of 3 runs. Every run
+ended with 0 oversold units.
 
-| | Naive (Postgres only) | Surge (3 instances) |
-|---|---|---|
-| Oversold units | 250 of 300 | 0 |
-| Throughput (req/s) | | |
-| p50 / p95 / p99 latency | | |
+| Scenario | Requests / capacity / concurrency | Throughput | Latency p50 / p95 / p99 |
+|---|---|---|---|
+| Most buyers turned away | 5000 / 500 / 100 | 259 req/s | 136 / 1791 / 2178 ms |
+| — the 500 successes only | | | 1718 / 1967 / 2016 ms |
+| — the 4500 rejections only | | | 116 / 874 / 2248 ms |
+| Everyone succeeds (every request inserts) | 1000 / 1000 / 50 | 55 req/s | 906 / 1053 / 1113 ms |
+| After sell-out (rejections only) | 20000 / 500 / 100 | _fill in_ | _fill in_ |
 
-The 300-request burst measured about 200-280 req/s on a laptop running the client, Docker, and all servers at once. That is not a benchmark.
+The successful path is bounded by the Postgres insert (a network round trip to
+a remote database). The rejection path never touches Postgres. For comparison,
+the first Postgres-only version of this project oversold 250 of 300 units on
+the same test.
 
 ## Known limitations
 

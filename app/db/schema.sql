@@ -20,13 +20,6 @@ CREATE TABLE IF NOT EXISTS reservations (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
-CREATE TABLE IF NOT EXISTS idempotency_keys (
-    key          TEXT PRIMARY KEY,
-    requester_id TEXT,
-    response     JSONB,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
-);
 CREATE TABLE IF NOT EXISTS outbox_events (
     id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     event_type      TEXT        NOT NULL,
