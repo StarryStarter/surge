@@ -1,0 +1,71 @@
+{
+  "title": "Surge",
+  "uid": "surge-main",
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "type": "timeseries", "title": "Requests per second by status",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "legendFormat": "{{status}}",
+        "expr": "sum by (status) (rate(surge_http_requests_total[1m]))" }]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "Latency p50 / p95 / p99 (seconds)",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "legendFormat": "p50",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(surge_http_request_duration_seconds_bucket[1m])))" },
+        { "refId": "B", "legendFormat": "p95",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(surge_http_request_duration_seconds_bucket[1m])))" },
+        { "refId": "C", "legendFormat": "p99",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(surge_http_request_duration_seconds_bucket[1m])))" }
+      ]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Oversold pools right now",
+      "gridPos": { "x": 0, "y": 8, "w": 6, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "max(surge_oversold_pools)" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [
+        { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } } }
+    },
+    {
+      "id": 4, "type": "stat", "title": "Pools currently drifted",
+      "gridPos": { "x": 6, "y": 8, "w": 6, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "max(surge_reconcile_drifted_pools)" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [
+        { "color": "green", "value": null }, { "color": "orange", "value": 1 } ] } } }
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Rate-limited requests per second",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "legendFormat": "429s",
+        "expr": "sum(rate(surge_rate_limited_total[1m]))" }]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Outbox events by result (per second)",
+      "gridPos": { "x": 0, "y": 13, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "legendFormat": "{{result}}",
+        "expr": "sum by (result) (rate(surge_outbox_events_total[1m]))" }]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Holds expired / Reconciler repairs (last 5m)",
+      "gridPos": { "x": 12, "y": 13, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "legendFormat": "holds expired",
+          "expr": "sum(increase(surge_holds_expired_total[5m]))" },
+        { "refId": "B", "legendFormat": "repairs: {{kind}}",
+          "expr": "sum by (kind) (increase(surge_reconcile_heals_total[5m]))" }
+      ]
+    }
+  ]
+}

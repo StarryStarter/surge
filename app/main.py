@@ -19,6 +19,11 @@ from app.core.reservation.expiry import HoldExpiryWorker
 from app.core.reservation.repository import ReservationRepository
 from app.db.pool import create_pool
 from app.core.fairness.rate_limiter import RateLimiter
+from time import perf_counter
+
+from fastapi import Request
+from app.observability.metrics import HTTP_LATENCY, HTTP_REQUESTS
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -38,7 +43,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         db = app.state.db_pool
         admission = AdmissionService(app.state.redis)
         app.state.admission = admission
-        
+
         app.state.rate_limiter = RateLimiter(
             app.state.redis,
             settings.rate_limit_requests,
@@ -79,6 +84,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.app_name, version=__version__, lifespan=lifespan)
+
+    @app.middleware("http")
+    async def record_metrics(request: Request, call_next):  # type: ignore[no-untyped-def]
+        start = perf_counter()
+        response = await call_next(request)
+        route = request.scope.get("route")
+        path = getattr(route, "path", "unmatched")
+        if not path.startswith("/metrics"):
+            HTTP_REQUESTS.labels(request.method, path, str(response.status_code)).inc()
+            HTTP_LATENCY.labels(request.method, path).observe(perf_counter() - start)
+        return response
+
     errors.register(app)
     app.include_router(health.router)
     app.include_router(pools.router)

@@ -7,7 +7,7 @@ from app.core.admission.service import AdmissionService
 from app.core.loop import run_periodically
 from app.core.reconciliation.repository import ReconciliationRepository
 from app.observability.metrics import (
-    OVERSOLD_DETECTED,
+    OVERSOLD_POOLS,
     RECONCILE_DRIFTED_POOLS,
     RECONCILE_HEALS,
 )
@@ -29,6 +29,9 @@ class ReconciliationService:
     Postgres not yet) looks identical to drift for a few milliseconds and
     "fixing" it could cause an oversell. A missing counter is rebuilt right
     away: nobody can be admitted to that pool until it exists.
+
+    Only the instance holding the Redis lock repairs anything. The others
+    still do a read-only pass so their metrics stay fresh.
     """
 
     def __init__(
@@ -45,35 +48,41 @@ class ReconciliationService:
 
     async def run_once(self) -> int:
         """One pass. Returns how many pools were repaired."""
-        if not await self._redis.set(_LOCK_KEY, "1", nx=True, ex=_LOCK_TTL_SECONDS):
-            return 0  # another instance is already reconciling
-        try:
-            return await self._pass()
-        finally:
-            await self._redis.delete(_LOCK_KEY)
+        if await self._redis.set(_LOCK_KEY, "1", nx=True, ex=_LOCK_TTL_SECONDS):
+            try:
+                return await self._pass(repair=True)
+            finally:
+                await self._redis.delete(_LOCK_KEY)
+        await self._pass(repair=False)
+        return 0
 
-    async def _pass(self) -> int:
+    async def _pass(self, repair: bool) -> int:
         snapshot = await self._repo.snapshot()
         actuals = await self._admission.get_many([s.pool_id for s in snapshot])
         suspect_ttl = int(self._interval * 3) + 10
         healed = 0
         drifted = 0
+        oversold = 0
 
         for s in snapshot:
             expected = s.capacity - s.active - s.pending
             if expected < 0:
-                OVERSOLD_DETECTED.inc()
-                logger.critical(
-                    "pool %s has %d active reservations for capacity %d: OVERSOLD",
-                    s.pool_id,
-                    s.active,
-                    s.capacity,
-                )
+                oversold += 1
+                if repair:
+                    logger.critical(
+                        "pool %s has %d active reservations for capacity %d: "
+                        "OVERSOLD",
+                        s.pool_id,
+                        s.active,
+                        s.capacity,
+                    )
                 expected = 0
 
             actual = actuals[s.pool_id]
             if actual is None:
-                if await self._admission.restore_if_missing(s.pool_id, expected):
+                if repair and await self._admission.restore_if_missing(
+                    s.pool_id, expected
+                ):
                     healed += 1
                     RECONCILE_HEALS.labels("rebuilt").inc()
                     logger.warning(
@@ -86,10 +95,13 @@ class ReconciliationService:
             delta = expected - actual
             key = _suspect_key(s.pool_id)
             if delta == 0:
-                await self._redis.delete(key)
+                if repair:
+                    await self._redis.delete(key)
                 continue
 
             drifted += 1
+            if not repair:
+                continue
             previous = await self._redis.get(key)
             if previous is not None and int(previous) == delta:
                 await self._admission.adjust(s.pool_id, delta)
@@ -106,6 +118,7 @@ class ReconciliationService:
             else:
                 await self._redis.set(key, delta, ex=suspect_ttl)
 
+        OVERSOLD_POOLS.set(oversold)
         RECONCILE_DRIFTED_POOLS.set(drifted)
         return healed
 

@@ -1,12 +1,21 @@
 import asyncio
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from dataclasses import dataclass
+from typing import Any
 
 import asyncpg
 import pytest
 from fastapi.testclient import TestClient
 from redis import Redis as SyncRedis
+from redis.asyncio import Redis
 
 from app.config import get_settings
+from app.core.admission.service import AdmissionService
+from app.core.outbox.repository import OutboxRepository
+from app.core.pool.models import Pool
+from app.core.pool.repository import PoolRepository
+from app.core.reservation.repository import ReservationRepository
+from app.core.reservation.service import ReservationService
 from app.db.schema import apply_schema
 from app.main import create_app
 
@@ -94,3 +103,53 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     with TestClient(create_app()) as test_client:
         yield test_client
     get_settings.cache_clear()
+
+@dataclass
+class World:
+    """Everything a service-level test needs: live connections to the test
+    Postgres and test Redis, plus one freshly opened pool."""
+
+    db: asyncpg.Pool
+    redis: Redis
+    pool: Pool
+    admission: AdmissionService
+
+    def outbox(self, max_attempts: int = 8) -> OutboxRepository:
+        return OutboxRepository(self.db, max_attempts)
+
+    def service(
+        self, admission: AdmissionService | None = None, hold_ttl: int = 900
+    ) -> ReservationService:
+        return ReservationService(
+            ReservationRepository(self.db, hold_ttl),
+            admission or self.admission,
+            self.outbox(),
+        )
+
+@pytest.fixture
+def run_world(db_dsn: str) -> Callable[..., None]:
+    """Run an async scenario against a fresh pool.
+
+        def test_x(run_world):
+            async def scenario(w): ...
+            run_world(scenario, capacity=5)
+    """
+
+    def run(scenario: Callable[[Any], Awaitable[None]], capacity: int = 1) -> None:
+        async def runner() -> None:
+            db = await asyncpg.create_pool(db_dsn, min_size=1, max_size=3)
+            redis = Redis.from_url(
+                get_settings().redis_url.get_secret_value(), decode_responses=True
+            )
+            try:
+                pool = await PoolRepository(db).create("GA", capacity=capacity)
+                admission = AdmissionService(redis)
+                await admission.open_pool(pool.id, capacity=capacity)
+                await scenario(World(db, redis, pool, admission))
+            finally:
+                await redis.aclose()
+                await db.close()
+
+        asyncio.run(runner())
+
+    return run
